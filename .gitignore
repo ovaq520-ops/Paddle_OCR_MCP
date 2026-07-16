@@ -1,20 +1,24 @@
-# 模型缓存（太大）
+# 模型权重（自动下载，不上传）
 models/
 
-# 测试图片
-*.png
-*.jpg
-*.jpeg
-test_images/
+# 历史归档（仅自己看）
+_history/
 
 # Python
 __pycache__/
 *.pyc
-*.pyo
 
-# 调试输出
-_ocr_output.txt
-ocr_results.md
+# 日志
+*.log
+
+# 测试截图
+Snipaste_*.png
 
 # IDE
 .vscode/
+.playwright-mcp/
+
+# 临时文件
+_bench.py
+_test_import.py
+_ocr_output.txt

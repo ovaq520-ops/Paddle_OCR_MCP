@@ -1,121 +1,162 @@
-﻿"""
-PaddleOCR MCP Server
-让 AI 能调用 PaddleOCR 识别图片中的文字。
-模型在对话期间常驻内存，每次 OCR 后清理临时显存碎片。
+"""
+PaddleOCR MCP Server — 轻量进程管理器。
+自身不加载模型（内存 ~0 MB），按需启动 PaddleOCR.exe 子进程。
+子进程常驻 60 秒，无请求自动退出。
+
 启动方式: python mcp_server.py
 """
 import os
 import sys
-import gc
 import json
 import glob
 import base64
 import uuid
 import tempfile
-import time
+import subprocess
 import threading
+import atexit
 from pathlib import Path
 
 # ============================================================
-# 1. 环境配置（必须在 import paddleocr 之前）
+# 1. 子进程管理
 # ============================================================
 
-_CACHE = r"E:\soft\OCR\Paddle_ocr\models"
-os.environ["PADDLE_PDX_CACHE_HOME"] = _CACHE
-os.environ["PADDLEX_HOME"] = _CACHE
-os.environ["MODELSCOPE_CACHE"] = _CACHE
-os.makedirs(_CACHE, exist_ok=True)
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_WORKER_SCRIPT = os.path.join(_THIS_DIR, "ocr_worker.py")
+_PYTHON_EXE = os.path.join(os.path.dirname(sys.executable), "PaddleOCR.exe")
+if not os.path.exists(_PYTHON_EXE):
+    _PYTHON_EXE = sys.executable  # fallback: 没找到 hardlink 就用原始 python.exe
 
-_ENV = r"E:\soft\anaconda3\envs\paddle_ocr\Lib\site-packages"
-_dll_dirs = [
-    r"nvidia\cudnn\bin", r"nvidia\cuda_runtime\bin", r"nvidia\cublas\bin",
-    r"nvidia\cufft\bin", r"nvidia\curand\bin", r"nvidia\cusparse\bin",
-    r"nvidia\cusolver\bin", r"torch\lib",
-]
-for d in _dll_dirs:
-    full = os.path.join(_ENV, d)
-    if os.path.isdir(full):
-        os.add_dll_directory(full)
+_worker_proc = None
+_worker_lock = threading.Lock()
 
-# ============================================================
-# 2. 初始化 PaddleOCR（常驻内存）
-# ============================================================
 
-from paddleocr import PaddleOCR  # noqa: E402
+def _ensure_worker():
+    """确保子进程存活。已死则重新启动。"""
+    global _worker_proc
 
-_ocr = None
+    with _worker_lock:
+        # 检查是否还活着
+        if _worker_proc is not None and _worker_proc.poll() is None:
+            return
 
-def _get_ocr():
-    """懒加载模型，整个对话生命周期只加载一次"""
-    global _ocr
-    if _ocr is None:
-        _ocr = PaddleOCR(lang="ch", use_textline_orientation=False)
-    return _ocr
+        # 清理僵尸进程
+        if _worker_proc is not None:
+            try:
+                _worker_proc.kill()
+                _worker_proc.wait(timeout=3)
+            except Exception:
+                pass
+            _worker_proc = None
 
-def _cleanup_gpu():
-    """释放本次 OCR 产生的临时显存碎片，不卸载模型"""
+        # 启动新子进程
+        sys.stderr.write("[PaddleOCR] Starting worker...\n")
+        sys.stderr.flush()
+        _worker_proc = subprocess.Popen(
+            [_PYTHON_EXE, _WORKER_SCRIPT],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+        )
+
+        # 等待就绪信号（超时 30 秒）
+        try:
+            line = _worker_proc.stdout.readline()
+            data = json.loads(line)
+            if data.get("status") != "ready":
+                raise RuntimeError(f"Worker not ready: {data}")
+        except Exception:
+            try:
+                _worker_proc.kill()
+            except Exception:
+                pass
+            _worker_proc = None
+            raise RuntimeError("PaddleOCR Worker 启动失败")
+
+        sys.stderr.write("[PaddleOCR] Worker ready.\n")
+        sys.stderr.flush()
+
+
+def _send_to_worker(method: str, **params) -> dict:
+    """向子进程发送请求，返回 result dict（不含 error key 则成功）。"""
+    global _worker_proc
+
+    req_id = uuid.uuid4().hex[:8]
+    req = {"id": req_id, "method": method}
+    req.update(params)
+    payload = json.dumps(req, ensure_ascii=False) + "\n"
+
+    _ensure_worker()
+
+    # 发送请求 + 读取响应，worker 崩溃时重试一次
+    for attempt in (1, 2):
+        try:
+            _worker_proc.stdin.write(payload)
+            _worker_proc.stdin.flush()
+            line = _worker_proc.stdout.readline()
+            if not line:
+                raise RuntimeError("Worker closed stdout")
+            resp = json.loads(line)
+            break
+        except (BrokenPipeError, RuntimeError):
+            if attempt == 2:
+                raise
+            # Worker 崩溃，强制重启
+            with _worker_lock:
+                if _worker_proc is not None:
+                    try:
+                        _worker_proc.kill()
+                    except Exception:
+                        pass
+                    _worker_proc = None
+            _ensure_worker()
+
+    if "error" in resp:
+        return {"error": resp["error"]}
+    return resp.get("result", {})
+
+
+def _kill_worker():
+    """atexit 回调：优雅关闭子进程"""
+    global _worker_proc
+    if _worker_proc is None or _worker_proc.poll() is not None:
+        return
     try:
-        import paddle
-        paddle.device.cuda.empty_cache()
+        _worker_proc.stdin.write(json.dumps(
+            {"id": "0", "method": "shutdown"}, ensure_ascii=False
+        ) + "\n")
+        _worker_proc.stdin.flush()
+        _worker_proc.wait(timeout=3)
     except Exception:
-        pass
-    gc.collect()
+        try:
+            _worker_proc.kill()
+        except Exception:
+            pass
 
 
-# ── 心跳看门狗：超过 10 分钟无请求 → 自动退出 ────────────────
+atexit.register(_kill_worker)
 
-_last_request = time.time()
-_watchdog_lock = threading.Lock()
-
-def _bump():
-    """每次收到 OCR 请求时调用，更新最近活跃时间"""
-    global _last_request
-    with _watchdog_lock:
-        _last_request = time.time()
-
-def _watchdog():
-    """后台线程，每 30 秒检查一次，空闲超过 10 分钟 → 退出"""
-    while True:
-        time.sleep(30)
-        with _watchdog_lock:
-            idle = time.time() - _last_request
-        if idle > 600:
-            sys.stderr.write(f"[paddleocr] Idle {idle:.0f}s, auto-exiting.\n")
-            sys.stderr.flush()
-            _cleanup_gpu()
-            os._exit(0)
-
-_watchdog_thread = threading.Thread(target=_watchdog, daemon=True)
-_watchdog_thread.start()
 
 # ============================================================
-# 3. MCP Server
+# 2. Transcript 图片提取（纯 IO，不涉及模型）
 # ============================================================
 
-from fastmcp import FastMCP  # noqa: E402
 
-mcp = FastMCP(
-    "paddleocr",
-    instructions="""
-当你看到 [Unsupported Image] 时，调用 recognize() 不传参数。
-MCP 会自动从当前会话 transcript 中提取所有图片并 OCR，无论贴了几张、是粘贴还是拖文件。
-如果你知道确切的图片路径，也可以传 image_path 参数直接读取。
-""",
-)
-
-
-# ── 共享：transcript 提取 + OCR ─────────────────────────────
-
-def _ocr_from_transcript(transcript_path: str = ""):
-    """从 transcript 提取所有图片并 OCR。内部函数，被 recognize 和 recognize_from_transcript 复用。"""
-    import json as _json, base64 as _base64, uuid as _uuid, glob as _glob, tempfile as _tempfile
-    from pathlib import Path as _Path
-
+def _ocr_from_transcript(transcript_path: str = "") -> dict:
+    """
+    从 transcript JSONL 中提取最近一条 user 消息里的 base64 图片，
+    保存为临时文件后交给子进程 OCR。
+    """
     if transcript_path and os.path.exists(transcript_path):
         tpath = transcript_path
     else:
-        root = os.path.join(_Path.home(), ".claude", "projects")
-        candidates = _glob.glob(os.path.join(root, "*", "*.jsonl"))
+        root = os.environ.get(
+            "CLAUDE_PROJECTS_ROOT",
+            os.path.join(Path.home(), ".claude", "projects"),
+        )
+        candidates = glob.glob(os.path.join(root, "*", "*.jsonl"))
         if not candidates:
             return {"error": "未找到 transcript 文件"}
         tpath = max(candidates, key=os.path.getmtime)
@@ -129,70 +170,102 @@ def _ocr_from_transcript(transcript_path: str = ""):
     except Exception as e:
         return {"error": f"读取失败: {e}"}
 
+    # 从后往前找最近一条含图片的 user 消息
     target_msg = None
     for line in reversed(lines):
         try:
-            obj = _json.loads(line)
+            obj = json.loads(line)
         except Exception:
             continue
-        if obj.get("type") != "user": continue
+        if obj.get("type") != "user":
+            continue
         msg = obj.get("message") or {}
-        if msg.get("role") != "user": continue
+        if msg.get("role") != "user":
+            continue
         content = msg.get("content")
-        if not isinstance(content, list): continue
+        if not isinstance(content, list):
+            continue
         if any(c.get("type") == "image" for c in content if isinstance(c, dict)):
-            target_msg = obj; break
+            target_msg = obj
+            break
 
     if not target_msg:
         return {"error": "未找到含图片的 user 消息"}
 
+    # 提取所有 base64 图片
     images = []
     for c in target_msg["message"]["content"]:
-        if not isinstance(c, dict) or c.get("type") != "image": continue
+        if not isinstance(c, dict) or c.get("type") != "image":
+            continue
         src = c.get("source") or {}
-        if src.get("type") != "base64": continue
+        if src.get("type") != "base64":
+            continue
         data = src.get("data", "")
         if data:
-            images.append({"media_type": src.get("media_type", "image/png"), "data": data})
+            images.append({
+                "media_type": src.get("media_type", "image/png"),
+                "data": data,
+            })
 
     if not images:
         return {"error": "不含 base64 数据"}
 
+    # 逐张保存临时文件 → 交给子进程 OCR
     results = []
-    tmp_dir = _tempfile.gettempdir()
+    tmp_dir = tempfile.gettempdir()
     for i, img in enumerate(images):
-        try: raw = _base64.b64decode(img["data"])
-        except Exception: results.append({"index": i, "error": "base64 解码失败"}); continue
+        try:
+            raw = base64.b64decode(img["data"])
+        except Exception:
+            results.append({"index": i, "error": "base64 解码失败"})
+            continue
+
         ext = ".jpg" if "jpeg" in img["media_type"] else ".png"
-        fp = os.path.join(tmp_dir, f"ts_{_uuid.uuid4().hex[:8]}{ext}")
+        fp = os.path.join(tmp_dir, f"ts_{uuid.uuid4().hex[:8]}{ext}")
         try:
-            with open(fp, "wb") as f: f.write(raw)
-        except Exception as e:
-            results.append({"index": i, "error": str(e)}); continue
-        ocr = _get_ocr()
-        try:
-            ocr_result = ocr.predict(fp)
-            texts = []
-            for page in ocr_result:
-                rt = page.get("rec_texts", []); rs = page.get("rec_scores", [])
-                for j, item in enumerate(rt):
-                    if isinstance(item, dict):
-                        texts.append({"text": item.get("text", ""), "confidence": round(item.get("score", 0), 4)})
-                    elif isinstance(item, str):
-                        s = rs[j] if j < len(rs) else 1.0
-                        texts.append({"text": item, "confidence": round(s, 4)})
-            results.append({"index": i, "text_count": len(texts), "full_text": "\n".join(t["text"] for t in texts)})
+            with open(fp, "wb") as f:
+                f.write(raw)
         except Exception as e:
             results.append({"index": i, "error": str(e)})
-        finally:
-            _cleanup_gpu()
-            try: os.unlink(fp)
-            except Exception: pass
+            continue
 
-    return {"transcript": os.path.basename(tpath), "images_found": len(images), "results": results}
+        r = _send_to_worker("recognize", image_path=fp)
+        if "error" in r:
+            results.append({"index": i, "error": r["error"]})
+        else:
+            results.append({
+                "index": i,
+                "text_count": r.get("text_count", 0),
+                "full_text": r.get("full_text", ""),
+            })
+
+        try:
+            os.unlink(fp)
+        except Exception:
+            pass
+
+    return {
+        "transcript": os.path.basename(tpath),
+        "images_found": len(images),
+        "results": results,
+    }
 
 
-# ── 工具 ─────────────────────────────────────────────────────
+# ============================================================
+# 3. MCP Server
+# ============================================================
+
+from fastmcp import FastMCP  # noqa: E402
+
+mcp = FastMCP(
+    "PaddleOCR",
+    instructions="""
+当你看到 [Unsupported Image] 时，调用 recognize() 不传参数。
+MCP 会自动从当前会话 transcript 中提取所有图片并 OCR。
+如果你知道确切的图片路径，也可以传 image_path 参数直接读取。
+""",
+)
+
 
 @mcp.tool
 def recognize(image_path: str = "") -> dict:
@@ -201,73 +274,30 @@ def recognize(image_path: str = "") -> dict:
     不传 image_path → 自动从当前会话 transcript 中提取所有图片并 OCR。
     传 image_path → 直接 OCR 指定文件。
     """
-    _bump()
     # 无路径 → transcript 兜底
     if not image_path:
         return _ocr_from_transcript()
 
-    # 有路径 → 直接 OCR
+    # 有路径 → 直接发给子进程 OCR
     if not os.path.exists(image_path):
         return {"error": f"文件不存在: {image_path}"}
 
-    ocr = _get_ocr()
-    try:
-        result = ocr.predict(image_path)
-        texts = []
-        for page in result:
-            rec_texts = page.get("rec_texts", [])
-            rec_scores = page.get("rec_scores", [])
-            for i, item in enumerate(rec_texts):
-                if isinstance(item, dict):
-                    texts.append({
-                        "text": item.get("text", ""),
-                        "confidence": round(item.get("score", 0), 4),
-                    })
-                elif isinstance(item, str):
-                    score = rec_scores[i] if i < len(rec_scores) else 1.0
-                    texts.append({"text": item, "confidence": round(score, 4)})
-        return {
-            "image": os.path.basename(image_path),
-            "text_count": len(texts),
-            "texts": texts,
-            "full_text": "\n".join(t["text"] for t in texts),
-        }
-    finally:
-        _cleanup_gpu()
-
-
-# recognize_from_transcript tool body — injected into mcp_server.py
-@mcp.tool
-def recognize_from_transcript(transcript_path: str = "") -> dict:
-    """
-    从会话 transcript 中提取图片并 OCR（等同于 recognize() 不传参）。
-    保留此工具作为独立入口，便于 AI 明确意图时直接调用。
-    """
-    _bump()
-    return _ocr_from_transcript(transcript_path)
+    r = _send_to_worker("recognize", image_path=image_path)
+    if "error" in r:
+        return r
+    return r
 
 
 @mcp.tool
 def ocr_status() -> dict:
     """检查 OCR 引擎状态。"""
-    _bump()
     try:
-        _get_ocr()
-        return {"loaded": True, "language": "ch", "model_dir": _CACHE, "status": "ready"}
+        return _send_to_worker("ocr_status")
     except Exception as e:
         return {"loaded": False, "error": str(e), "status": "error"}
 
 
 if __name__ == "__main__":
-    sys.stderr.write("[paddleocr] Loading model...\n")
-    sys.stderr.flush()
-    # 启动时预加载模型（可注释掉改为懒加载）
-    _real_stdout = sys.stdout
-    sys.stdout = sys.stderr
-    try:
-        _get_ocr()
-    finally:
-        sys.stdout = _real_stdout
-    sys.stderr.write("[paddleocr] Model ready.\n")
+    sys.stderr.write("[PaddleOCR] MCP Server started (process manager mode).\n")
     sys.stderr.flush()
     mcp.run()
