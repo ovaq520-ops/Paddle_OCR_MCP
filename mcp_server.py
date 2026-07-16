@@ -65,71 +65,35 @@ def _cleanup_gpu():
 
 from fastmcp import FastMCP  # noqa: E402
 
-mcp = FastMCP("paddleocr")
+mcp = FastMCP(
+    "paddleocr",
+    instructions="""
+当你看到 [Unsupported Image] 时，调用 recognize() 不传参数。
+MCP 会自动从当前会话 transcript 中提取所有图片并 OCR，无论贴了几张、是粘贴还是拖文件。
+如果你知道确切的图片路径，也可以传 image_path 参数直接读取。
+""",
+)
 
 
-@mcp.tool
-def recognize(image_path: str) -> dict:
-    """识别图片中的所有文字。参数 image_path 是图片文件的完整路径。返回每行文字的内容和置信度。"""
-    if not os.path.exists(image_path):
-        return {"error": f"文件不存在: {image_path}"}
+# ── 共享：transcript 提取 + OCR ─────────────────────────────
 
-    ocr = _get_ocr()
-    try:
-        result = ocr.predict(image_path)
-
-        texts = []
-        for page in result:
-            rec_texts = page.get("rec_texts", [])
-            rec_scores = page.get("rec_scores", [])
-            for i, item in enumerate(rec_texts):
-                if isinstance(item, dict):
-                    texts.append({
-                        "text": item.get("text", ""),
-                        "confidence": round(item.get("score", 0), 4),
-                    })
-                elif isinstance(item, str):
-                    score = rec_scores[i] if i < len(rec_scores) else 1.0
-                    texts.append({"text": item, "confidence": round(score, 4)})
-
-        return {
-            "image": os.path.basename(image_path),
-            "text_count": len(texts),
-            "texts": texts,
-            "full_text": "\n".join(t["text"] for t in texts),
-        }
-    finally:
-        _cleanup_gpu()
-
-
-# recognize_from_transcript tool body — injected into mcp_server.py
-@mcp.tool
-def recognize_from_transcript(transcript_path: str = "") -> dict:
-    """
-    从会话 transcript 中提取用户贴的图片并 OCR。
-    transcript_path 可选，不传则自动在 ~/.claude/projects/ 下找最新 transcript。
-    适用于多图粘贴（hook 只捕获最后一张）、拖文件贴图等场景。
-    """
+def _ocr_from_transcript(transcript_path: str = ""):
+    """从 transcript 提取所有图片并 OCR。内部函数，被 recognize 和 recognize_from_transcript 复用。"""
     import json as _json, base64 as _base64, uuid as _uuid, glob as _glob, tempfile as _tempfile
     from pathlib import Path as _Path
 
-    # 自动发现 transcript
     if transcript_path and os.path.exists(transcript_path):
         tpath = transcript_path
     else:
-        try:
-            root = os.path.join(_Path.home(), ".claude", "projects")
-            candidates = _glob.glob(os.path.join(root, "*", "*.jsonl"))
-            if not candidates:
-                return {"error": "未找到 transcript 文件"}
-            tpath = max(candidates, key=os.path.getmtime)
-        except Exception as e:
-            return {"error": f"自动发现 transcript 失败: {e}"}
+        root = os.path.join(_Path.home(), ".claude", "projects")
+        candidates = _glob.glob(os.path.join(root, "*", "*.jsonl"))
+        if not candidates:
+            return {"error": "未找到 transcript 文件"}
+        tpath = max(candidates, key=os.path.getmtime)
 
     if not os.path.exists(tpath):
         return {"error": f"文件不存在: {tpath}"}
 
-    # 读 transcript，找最新含图片的 user 消息
     try:
         with open(tpath, "r", encoding="utf-8") as f:
             lines = [l.strip() for l in f if l.strip()]
@@ -153,7 +117,6 @@ def recognize_from_transcript(transcript_path: str = "") -> dict:
     if not target_msg:
         return {"error": "未找到含图片的 user 消息"}
 
-    # 提取 base64 图片
     images = []
     for c in target_msg["message"]["content"]:
         if not isinstance(c, dict) or c.get("type") != "image": continue
@@ -166,20 +129,17 @@ def recognize_from_transcript(transcript_path: str = "") -> dict:
     if not images:
         return {"error": "不含 base64 数据"}
 
-    # 解码 + OCR
     results = []
     tmp_dir = _tempfile.gettempdir()
     for i, img in enumerate(images):
         try: raw = _base64.b64decode(img["data"])
         except Exception: results.append({"index": i, "error": "base64 解码失败"}); continue
-
         ext = ".jpg" if "jpeg" in img["media_type"] else ".png"
         fp = os.path.join(tmp_dir, f"ts_{_uuid.uuid4().hex[:8]}{ext}")
         try:
             with open(fp, "wb") as f: f.write(raw)
         except Exception as e:
             results.append({"index": i, "error": str(e)}); continue
-
         ocr = _get_ocr()
         try:
             ocr_result = ocr.predict(fp)
@@ -201,6 +161,59 @@ def recognize_from_transcript(transcript_path: str = "") -> dict:
             except Exception: pass
 
     return {"transcript": os.path.basename(tpath), "images_found": len(images), "results": results}
+
+
+# ── 工具 ─────────────────────────────────────────────────────
+
+@mcp.tool
+def recognize(image_path: str = "") -> dict:
+    """
+    识别图片中的文字。
+    不传 image_path → 自动从当前会话 transcript 中提取所有图片并 OCR。
+    传 image_path → 直接 OCR 指定文件。
+    """
+    # 无路径 → transcript 兜底
+    if not image_path:
+        return _ocr_from_transcript()
+
+    # 有路径 → 直接 OCR
+    if not os.path.exists(image_path):
+        return {"error": f"文件不存在: {image_path}"}
+
+    ocr = _get_ocr()
+    try:
+        result = ocr.predict(image_path)
+        texts = []
+        for page in result:
+            rec_texts = page.get("rec_texts", [])
+            rec_scores = page.get("rec_scores", [])
+            for i, item in enumerate(rec_texts):
+                if isinstance(item, dict):
+                    texts.append({
+                        "text": item.get("text", ""),
+                        "confidence": round(item.get("score", 0), 4),
+                    })
+                elif isinstance(item, str):
+                    score = rec_scores[i] if i < len(rec_scores) else 1.0
+                    texts.append({"text": item, "confidence": round(score, 4)})
+        return {
+            "image": os.path.basename(image_path),
+            "text_count": len(texts),
+            "texts": texts,
+            "full_text": "\n".join(t["text"] for t in texts),
+        }
+    finally:
+        _cleanup_gpu()
+
+
+# recognize_from_transcript tool body — injected into mcp_server.py
+@mcp.tool
+def recognize_from_transcript(transcript_path: str = "") -> dict:
+    """
+    从会话 transcript 中提取图片并 OCR（等同于 recognize() 不传参）。
+    保留此工具作为独立入口，便于 AI 明确意图时直接调用。
+    """
+    return _ocr_from_transcript(transcript_path)
 
 
 @mcp.tool
