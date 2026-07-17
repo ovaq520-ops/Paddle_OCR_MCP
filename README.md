@@ -13,7 +13,7 @@ PaddleOCR MCP Server 为 AI 提供 OCR 文字识别能力。AI 调用 `recognize
 
 ### 1. 创建环境并安装依赖
 
-支持 **conda** 或 **venv** 任选其一。
+支持 **conda** 或 **venv** 任选其一。Windows GPU 版需从 Paddle 官方 CUDA 专用源安装，不能直接从默认 PyPI 装。
 
 #### 方式一：conda（推荐，便于 GPU 依赖管理）
 
@@ -21,8 +21,16 @@ PaddleOCR MCP Server 为 AI 提供 OCR 文字识别能力。AI 调用 `recognize
 conda create -n paddle_ocr python=3.10
 conda activate paddle_ocr
 
-# 国内用户推荐用镜像加速
-pip install paddlepaddle-gpu paddleocr fastmcp -i https://mirror.baidu.com/pypi/simple
+# Windows GPU（根据你的 CUDA 版本选一条）
+python -m pip install paddlepaddle-gpu==3.3.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu118/   # CUDA 11.8
+python -m pip install paddlepaddle-gpu==3.3.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/   # CUDA 12.6
+python -m pip install paddlepaddle-gpu==3.3.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu129/   # CUDA 12.9
+
+# Windows CPU / macOS / Linux
+pip install paddlepaddle paddleocr fastmcp
+
+# 国内用户可加百度镜像加速 paddleocr/fastmcp
+pip install paddleocr fastmcp -i https://mirror.baidu.com/pypi/simple
 ```
 
 #### 方式二：venv / virtualenv
@@ -35,12 +43,16 @@ python -m venv .venv
 # macOS / Linux
 source .venv/bin/activate
 
-# 安装依赖
+# 安装依赖（Windows GPU 按 CUDA 版本选择上面 conda 中的官方源命令）
 pip install paddlepaddle-gpu paddleocr fastmcp
+
+# Windows CPU / macOS / Linux
+# pip install paddlepaddle paddleocr fastmcp
 ```
 
 > **CPU 用户**：将 `paddlepaddle-gpu` 替换为 `paddlepaddle`。
-
+>
+> **Windows 找不到 `paddlepaddle-gpu` 版本？** 确认 Python 是 3.9-3.13 的 64 位版本，并使用上面带有 CUDA 版本号的官方源安装。
 首次使用时 PaddleOCR 会自动从 ModelScope 下载模型权重（~140MB），缓存在项目 `models/` 目录下，之后不再需要下载。
 
 ### 2. 注册 MCP Server

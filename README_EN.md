@@ -13,7 +13,7 @@ PaddleOCR MCP Server provides OCR capabilities to AI assistants. When the AI cal
 
 ### 1. Create Environment & Install Dependencies
 
-You can use either **conda** or **venv**.
+You can use either **conda** or **venv**. On Windows, the GPU wheel must be installed from Paddle's CUDA-specific repository, not the default PyPI index.
 
 #### Option 1: conda (recommended for GPU dependency management)
 
@@ -21,7 +21,13 @@ You can use either **conda** or **venv**.
 conda create -n paddle_ocr python=3.10
 conda activate paddle_ocr
 
-pip install paddlepaddle-gpu paddleocr fastmcp
+# Windows GPU (choose one matching your CUDA version)
+python -m pip install paddlepaddle-gpu==3.3.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu118/   # CUDA 11.8
+python -m pip install paddlepaddle-gpu==3.3.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/   # CUDA 12.6
+python -m pip install paddlepaddle-gpu==3.3.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu129/   # CUDA 12.9
+
+# Windows CPU / macOS / Linux
+pip install paddlepaddle paddleocr fastmcp
 ```
 
 #### Option 2: venv / virtualenv
@@ -34,11 +40,16 @@ python -m venv .venv
 # macOS / Linux
 source .venv/bin/activate
 
-# Install dependencies
+# Install dependencies (for Windows GPU use the official CUDA source above)
 pip install paddlepaddle-gpu paddleocr fastmcp
+
+# Windows CPU / macOS / Linux
+# pip install paddlepaddle paddleocr fastmcp
 ```
 
 > **CPU users**: replace `paddlepaddle-gpu` with `paddlepaddle`.
+>
+> **Windows says no matching distribution for `paddlepaddle-gpu`?** Make sure Python is 64-bit 3.9-3.13 and install from the CUDA-specific official source shown above.
 
 On first use, PaddleOCR automatically downloads model weights (~140MB) from ModelScope and caches them in the `models/` directory. No manual download required.
 
