@@ -305,7 +305,7 @@ mcp = FastMCP(
     instructions="""
 当你看到 [Unsupported Image] 时，调用 recognize() 不传参数。
 MCP 会自动从当前会话 transcript 中提取所有图片并 OCR。
-如果你知道确切的图片路径，也可以传 image_path 参数直接读取。
+如果你知道确切的图片文件路径，也可以传 image_path 参数直接读取。
 """,
 )
 
