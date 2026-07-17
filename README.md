@@ -214,7 +214,7 @@ _ocr = PaddleOCR(
 ## 架构
 
 ```
-Claude Code 启动 → 读 mcp.json → 启动 mcp_server.py（轻量主进程，~85MB）
+Claude Code 启动 → 读 ~/.claude.json → 启动 mcp_server.py（轻量主进程，~85MB）
   → AI 调 recognize() → 主进程 spawn python ocr_worker.py（子进程，~900MB）
     → OCR 完成 → 子进程常驻 5 分钟 → 无新请求自动退出，释放 GPU
 ```
