@@ -1,7 +1,7 @@
 """
 PaddleOCR MCP Server — 轻量进程管理器。
 自身不加载模型（内存 ~0 MB），按需启动 PaddleOCR.exe 子进程。
-子进程常驻 60 秒，无请求自动退出。
+子进程常驻 300 秒（5 分钟），无请求自动退出。
 
 启动方式: python mcp_server.py
 """
@@ -148,8 +148,15 @@ def _ocr_from_transcript(transcript_path: str = "") -> dict:
     """
     从 transcript JSONL 中提取最近一条 user 消息里的 base64 图片，
     保存为临时文件后交给子进程 OCR。
+
+    定位优先级（从高到低）：
+    1. transcript_path 是完整路径且存在 → 直接使用（显式覆盖）
+    2. CLAUDE_CODE_SESSION_ID 可用 → 精确文件名匹配 {session_id}.jsonl（确定性）
+    3. transcript_path 是纯文件名 → 精确匹配 + mtime 兜底（AI 传的，不可靠）
+    4. 什么都没有 → mtime 最新（最后兜底，多窗口时可能串）
     """
     if transcript_path and os.path.exists(transcript_path):
+        # 优先级 1：显式完整路径
         tpath = transcript_path
     else:
         root = os.environ.get(
@@ -159,7 +166,23 @@ def _ocr_from_transcript(transcript_path: str = "") -> dict:
         candidates = glob.glob(os.path.join(root, "*", "*.jsonl"))
         if not candidates:
             return {"error": "未找到 transcript 文件"}
-        tpath = max(candidates, key=os.path.getmtime)
+
+        # 优先级 2：系统注入的 session_id，100% 可靠
+        session_id = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+        if session_id:
+            target = f"{session_id}.jsonl"
+            matched = [c for c in candidates if os.path.basename(c) == target]
+            if matched:
+                tpath = matched[0]
+            else:
+                return {"error": f"当前会话 transcript 未找到 (session_id={session_id})"}
+        elif transcript_path:
+            # 优先级 3：AI 传的裸文件名 → 精确匹配 + mtime 兜底
+            matched = [c for c in candidates if os.path.basename(c) == transcript_path]
+            tpath = matched[0] if matched else max(candidates, key=os.path.getmtime)
+        else:
+            # 优先级 4：最终兜底 — mtime 最新（多窗口时可能串）
+            tpath = max(candidates, key=os.path.getmtime)
 
     if not os.path.exists(tpath):
         return {"error": f"文件不存在: {tpath}"}
@@ -262,21 +285,22 @@ mcp = FastMCP(
     instructions="""
 当你看到 [Unsupported Image] 时，调用 recognize() 不传参数。
 MCP 会自动从当前会话 transcript 中提取所有图片并 OCR。
-如果你知道确切的图片路径，也可以传 image_path 参数直接读取。
+如果你知道确切的图片文件路径，也可以传 image_path 参数直接读取。
 """,
 )
 
 
 @mcp.tool
-def recognize(image_path: str = "") -> dict:
+def recognize(image_path: str = "", transcript_path: str = "") -> dict:
     """
     识别图片中的文字。
     不传 image_path → 自动从当前会话 transcript 中提取所有图片并 OCR。
     传 image_path → 直接 OCR 指定文件。
+    transcript_path 通常无需传入，系统会自动定位当前会话。
     """
     # 无路径 → transcript 兜底
     if not image_path:
-        return _ocr_from_transcript()
+        return _ocr_from_transcript(transcript_path)
 
     # 有路径 → 直接发给子进程 OCR
     if not os.path.exists(image_path):
