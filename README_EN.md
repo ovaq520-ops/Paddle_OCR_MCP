@@ -354,4 +354,4 @@ Claude Code starts → reads mcp.json → launches mcp_server.py (lightweight ma
 
 ## License
 
-MIT
+This project is licensed under the [MIT License](LICENSE).
