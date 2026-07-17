@@ -11,27 +11,66 @@ PaddleOCR MCP Server 为 AI 提供 OCR 文字识别能力。AI 调用 `recognize
 
 ## 安装
 
+### 1. 创建环境并安装依赖
+
 ```bash
-# 1. 创建 conda 环境
 conda create -n paddle_ocr python=3.10
 conda activate paddle_ocr
 
-# 2. 安装依赖（国内用户推荐用镜像加速）
+# 国内用户推荐用镜像加速
 pip install paddlepaddle-gpu paddleocr fastmcp -i https://mirror.baidu.com/pypi/simple
+```
 
-# 3. 配置 Claude Code
-# 在用户级 mcp.json（~/.claude/mcp.json）中添加：
+首次使用时 PaddleOCR 会自动从 ModelScope 下载模型权重（~140MB），缓存在项目 `models/` 目录下，之后不再需要下载。
+
+### 2. 注册 MCP Server
+
+Claude Code 支持两种注册方式：用户级（全局生效）和项目级（仅当前项目生效）。**推荐用户级注册**——一次配置，所有项目都能用。
+
+#### 用户级注册（推荐）
+
+编辑用户级配置文件，路径取决于操作系统：
+
+| 系统 | 路径 |
+|------|------|
+| Windows | `C:\Users\<用户名>\.claude\mcp.json` |
+| macOS / Linux | `~/.claude/mcp.json` |
+
+```json
 {
   "mcpServers": {
     "PaddleOCR": {
-      "command": "YOUR_CONDA_PATH/python.exe",
-      "args": ["YOUR_PATH/mcp_server.py"]
+      "command": "E:/soft/anaconda3/envs/paddle_ocr/python.exe",
+      "args": ["E:/soft/OCR/Paddle_ocr/mcp_server.py"]
     }
   }
 }
 ```
 
-首次使用时 PaddleOCR 会自动从 ModelScope 下载模型权重（~140MB），缓存在项目 `models/` 目录下，之后不再需要下载。
+> **注意**：将 `command` 和 `args` 中的路径替换为你本机实际路径。Windows 下路径分隔符使用 `/`。
+
+配置完成后重启 Claude Code 即可生效。**所有打开的 Claude Code 项目都会自动加载此 MCP。**
+
+#### 项目级注册
+
+如果只想在某个项目中使用，在项目根目录创建 `.mcp.json`：
+
+```json
+{
+  "mcpServers": {
+    "PaddleOCR": {
+      "command": "E:/soft/anaconda3/envs/paddle_ocr/python.exe",
+      "args": ["E:/soft/OCR/Paddle_ocr/mcp_server.py"]
+    }
+  }
+}
+```
+
+项目级配置只对当前项目生效。如果同时配置了用户级和项目级，**二者取并集**——同名 MCP 会被加载多次（导致重复进程），所以选择一种即可，不要同时配置。
+
+#### 验证
+
+重启 Claude Code 后，在对话中询问 AI 有哪些工具可用，应该能看到 `mcp__paddleocr__recognize` 和 `mcp__paddleocr__ocr_status`。
 
 ## 使用场景
 

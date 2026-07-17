@@ -11,27 +11,54 @@ PaddleOCR MCP Server provides OCR capabilities to AI assistants. When the AI cal
 
 ## Installation
 
+### 1. Create Environment & Install Dependencies
+
 ```bash
-# 1. Create conda environment
 conda create -n paddle_ocr python=3.10
 conda activate paddle_ocr
 
-# 2. Install dependencies
 pip install paddlepaddle-gpu paddleocr fastmcp
+```
 
-# 3. Configure Claude Code
-# Add to your user-level mcp.json (~/.claude/mcp.json or %USERPROFILE%/.claude/mcp.json on Windows):
+On first use, PaddleOCR automatically downloads model weights (~140MB) from ModelScope and caches them in the `models/` directory. No manual download required.
+
+### 2. Register the MCP Server
+
+Claude Code supports two registration modes: **user-level** (global, all projects) and **project-level** (single project). User-level is recommended — configure once, available everywhere.
+
+#### User-Level (Recommended)
+
+Edit the user-level config file:
+
+| OS | Path |
+|----|------|
+| Windows | `C:\Users\<username>\.claude\mcp.json` |
+| macOS / Linux | `~/.claude/mcp.json` |
+
+```json
 {
   "mcpServers": {
     "PaddleOCR": {
-      "command": "YOUR_CONDA_PATH/python.exe",
-      "args": ["YOUR_PATH/mcp_server.py"]
+      "command": "E:/soft/anaconda3/envs/paddle_ocr/python.exe",
+      "args": ["E:/soft/OCR/Paddle_ocr/mcp_server.py"]
     }
   }
 }
 ```
 
-On first use, PaddleOCR automatically downloads model weights (~140MB) from ModelScope and caches them in the `models/` directory. No manual download required.
+> **Note**: Replace `command` and `args` paths with your actual local paths. Use `/` as path separator on Windows.
+
+Restart Claude Code for changes to take effect. **All open Claude Code projects will load this MCP automatically.**
+
+#### Project-Level
+
+If you only want the MCP in one project, create a `.mcp.json` in the project root with the same content. The project-level config only affects that project.
+
+**Do NOT configure both user-level and project-level for the same MCP** — Claude Code will load both, resulting in duplicate processes. Pick one.
+
+#### Verify
+
+After restarting Claude Code, ask the AI "what tools are available?" — you should see `mcp__paddleocr__recognize` and `mcp__paddleocr__ocr_status`.
 
 ## Usage
 
