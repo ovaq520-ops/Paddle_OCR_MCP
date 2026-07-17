@@ -134,7 +134,7 @@ Restart Trae IDE after configuration. A green indicator in the MCP panel confirm
 
 #### Verify
 
-After restarting your IDE, ask the AI "what tools are available?" — you should see `mcp__paddleocr__recognize`, `mcp__paddleocr__recognize_batch`, and `mcp__paddleocr__ocr_status`.
+After restarting your IDE, ask the AI "what tools are available?" — you should see `mcp__paddleocr__recognize`, `mcp__paddleocr__recognize_batch`, `mcp__paddleocr__list_languages`, `mcp__paddleocr__set_language`, and `mcp__paddleocr__ocr_status`.
 
 ## Usage
 
@@ -202,7 +202,9 @@ Falls back to CPU mode if no GPU is available — 5-10x slower but still functio
 
 Recognize text from images.
 
-- **Parameter**: `image_path` — Full path to the image file (optional; if omitted, extracts images from the current session transcript)
+- **Parameters**:
+  - `image_path` — Full path to the image file (optional; if omitted, extracts images from the current session transcript)
+  - `output_format` — Output format: `text` (default) / `json` / `markdown`
 - **Returns**:
   ```json
   {
@@ -221,12 +223,43 @@ Recognize text from images.
   }
   ```
 
+#### output_format
+
+- `text`: returns `texts` and `full_text` (default).
+- `json`: each item in `texts` additionally includes `box` (four-point coordinates) and `confidence`.
+- `markdown`: additionally returns a `markdown` field for easy document insertion.
+
+Example:
+
+```
+Recognize this image and return JSON: C:\screenshot.png
+```
+
+The AI will call `recognize(image_path="C:/screenshot.png", output_format="json")`.
+
 ### recognize_batch
 
 Recognize text from multiple local images at once.
 
-- **Parameter**: `image_paths` — List of image paths (required)
+- **Parameters**:
+  - `image_paths` — List of image paths (required)
+  - `output_format` — Output format: `text` (default) / `json` / `markdown`
 - **Returns**: Same unified structure as `recognize`, with `source` set to `"batch"`
+
+### list_languages
+
+List supported OCR language codes.
+
+- **Returns**: List of languages with `code` and `name`
+
+### set_language
+
+Switch the OCR language model. Subsequent recognition requests use the new language.
+
+- **Parameter**: `lang` — Language code, e.g. `en`, `japan`, `korean`
+- **Returns**: `{"success": true, "language": "en", "status": "ready"}`
+
+> Switching languages reloads the model, which takes a few seconds. Call it at the start of a session or only when needed.
 
 ### ocr_status
 

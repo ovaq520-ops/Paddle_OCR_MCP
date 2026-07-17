@@ -217,7 +217,7 @@ def _save_base64_image(img: dict, tmp_dir: str) -> str:
     return fp
 
 
-def _ocr_from_transcript(transcript_path: str = "") -> dict:
+def _ocr_from_transcript(transcript_path: str = "", output_format: str = "text") -> dict:
     """从 transcript 提取图片并批量 OCR。"""
     tpath = _find_transcript(transcript_path)
     if not tpath:
@@ -239,7 +239,7 @@ def _ocr_from_transcript(transcript_path: str = "") -> dict:
             results.append({"index": i, "error": str(exc)})
     if tmp_paths:
         paths = [fp for _, fp in tmp_paths]
-        r = _send_to_worker("recognize", image_paths=paths)
+        r = _send_to_worker("recognize", image_paths=paths, output_format=output_format)
         if "error" in r:
             for i, _ in tmp_paths:
                 results.append({"index": i, "error": r["error"]})
@@ -257,6 +257,7 @@ def _ocr_from_transcript(transcript_path: str = "") -> dict:
                         "text_count": br.get("text_count", 0),
                         "texts": br.get("texts", []),
                         "full_text": br.get("full_text", ""),
+                        "markdown": br.get("markdown", "") if output_format == "markdown" else "",
                     })
         for _, fp in tmp_paths:
             try:
@@ -287,45 +288,51 @@ MCP 会自动从当前会话 transcript 中提取所有图片并 OCR。
 )
 
 
-def _normalize_result(r: dict, image: str = "") -> dict:
+def _normalize_result(r: dict, image: str = "", output_format: str = "text") -> dict:
     """统一 recognize 返回值结构。"""
     if "error" in r:
         return {"success": False, "error": r["error"], "results": []}
+    entry = {
+        "index": 0,
+        "image": r.get("image", image),
+        "text_count": r.get("text_count", 0),
+        "texts": r.get("texts", []),
+        "full_text": r.get("full_text", ""),
+    }
+    if output_format == "markdown":
+        entry["markdown"] = r.get("markdown", "")
     return {
         "success": True,
         "source": "image_path",
         "images_found": 1,
-        "results": [{
-            "index": 0,
-            "image": r.get("image", image),
-            "text_count": r.get("text_count", 0),
-            "texts": r.get("texts", []),
-            "full_text": r.get("full_text", ""),
-        }],
+        "results": [entry],
     }
 
 
 @mcp.tool
-def recognize(image_path: str = "") -> dict:
+def recognize(image_path: str = "", output_format: str = "text") -> dict:
     """识别图片中的文字。
     不传 image_path → 自动从当前会话 transcript 提取所有图片。
     传 image_path → 直接 OCR 指定文件。
+    output_format: text（默认）/ json / markdown
     """
     try:
         if not image_path:
-            return _ocr_from_transcript()
+            return _ocr_from_transcript(output_format=output_format)
         if not os.path.exists(image_path):
             return {"success": False, "error": f"文件不存在: {image_path}", "results": []}
-        r = _send_to_worker("recognize", image_path=image_path)
-        return _normalize_result(r, image=os.path.basename(image_path))
+        r = _send_to_worker("recognize", image_path=image_path, output_format=output_format)
+        return _normalize_result(r, image=os.path.basename(image_path), output_format=output_format)
     except Exception as exc:
         logger.error("recognize failed: %s", exc)
         return {"success": False, "error": str(exc), "results": []}
 
 
 @mcp.tool
-def recognize_batch(image_paths: Optional[List[str]] = None) -> dict:
-    """批量识别多张图片中的文字。"""
+def recognize_batch(image_paths: Optional[List[str]] = None, output_format: str = "text") -> dict:
+    """批量识别多张图片中的文字。
+    output_format: text（默认）/ json / markdown
+    """
     try:
         if not image_paths:
             return {"success": False, "error": "image_paths 不能为空", "results": []}
@@ -339,7 +346,7 @@ def recognize_batch(image_paths: Optional[List[str]] = None) -> dict:
         if not valid_paths:
             return {"success": False, "error": "所有路径均无效", "results": results}
         paths = [p for _, p in valid_paths]
-        r = _send_to_worker("recognize", image_paths=paths)
+        r = _send_to_worker("recognize", image_paths=paths, output_format=output_format)
         if "error" in r:
             return {"success": False, "error": r["error"], "results": results}
         batch_results = r.get("results", [])
@@ -347,13 +354,16 @@ def recognize_batch(image_paths: Optional[List[str]] = None) -> dict:
             if "error" in br:
                 results.append({"index": i, "error": br["error"]})
             else:
-                results.append({
+                entry = {
                     "index": i,
                     "image": br.get("image", os.path.basename(p)),
                     "text_count": br.get("text_count", 0),
                     "texts": br.get("texts", []),
                     "full_text": br.get("full_text", ""),
-                })
+                }
+                if output_format == "markdown":
+                    entry["markdown"] = br.get("markdown", "")
+                results.append(entry)
         return {
             "success": True,
             "source": "batch",
@@ -363,6 +373,43 @@ def recognize_batch(image_paths: Optional[List[str]] = None) -> dict:
     except Exception as exc:
         logger.error("recognize_batch failed: %s", exc)
         return {"success": False, "error": str(exc), "results": []}
+
+
+@mcp.tool
+def list_languages() -> dict:
+    """列出支持的 OCR 语言。"""
+    return {
+        "success": True,
+        "languages": [
+            {"code": "ch", "name": "简体中文"},
+            {"code": "en", "name": "English"},
+            {"code": "japan", "name": "日本語"},
+            {"code": "korean", "name": "한국어"},
+            {"code": "chinese_cht", "name": "繁體中文"},
+            {"code": "ta", "name": "தமிழ்"},
+            {"code": "te", "name": "తెలుగు"},
+            {"code": "ka", "name": "ಕನ್ನಡ"},
+            {"code": "latin", "name": "Latin"},
+            {"code": "arabic", "name": "العربية"},
+            {"code": "cyrillic", "name": "Cyrillic"},
+            {"code": "devanagari", "name": "Devanagari"},
+        ],
+    }
+
+
+@mcp.tool
+def set_language(lang: str) -> dict:
+    """切换 OCR 语言模型。切换后后续识别均使用新语言。"""
+    try:
+        if not lang:
+            return {"success": False, "error": "lang 不能为空"}
+        r = _send_to_worker("set_language", lang=lang)
+        if "error" in r:
+            return {"success": False, "error": r["error"]}
+        return {"success": True, "language": r.get("language", lang), "status": r.get("status", "ready")}
+    except Exception as exc:
+        logger.error("set_language failed: %s", exc)
+        return {"success": False, "error": str(exc)}
 
 
 @mcp.tool

@@ -135,7 +135,7 @@ codex mcp add PaddleOCR -- "E:/soft/anaconda3/envs/paddle_ocr/python.exe" "E:/so
 
 #### 验证
 
-重启 IDE 后，在对话中询问 AI 有哪些工具可用，应该能看到 `mcp__paddleocr__recognize`、`mcp__paddleocr__recognize_batch` 和 `mcp__paddleocr__ocr_status`。
+重启 IDE 后，在对话中询问 AI 有哪些工具可用，应该能看到 `mcp__paddleocr__recognize`、`mcp__paddleocr__recognize_batch`、`mcp__paddleocr__list_languages`、`mcp__paddleocr__set_language` 和 `mcp__paddleocr__ocr_status`。
 
 ## 使用场景
 
@@ -203,7 +203,9 @@ MCP 会自动从当前会话 transcript 中提取图片并 OCR。
 
 识别图片中的所有文字。
 
-- **参数**: `image_path` — 图片文件的完整路径（可选，不传则自动从 transcript 提取）
+- **参数**:
+  - `image_path` — 图片文件的完整路径（可选，不传则自动从 transcript 提取）
+  - `output_format` — 输出格式：`text`（默认）/`json`/`markdown`
 - **返回**:
   ```json
   {
@@ -222,12 +224,43 @@ MCP 会自动从当前会话 transcript 中提取图片并 OCR。
   }
   ```
 
+#### output_format 说明
+
+- `text`：返回 `texts` 和 `full_text`（默认）。
+- `json`：在 `texts` 中额外包含每个文本行的 `box`（四点坐标）和 `confidence`。
+- `markdown`：额外返回 `markdown` 字段，方便直接插入文档。
+
+示例：
+
+```
+识别这张图片并以 JSON 格式返回：C:\screenshot.png
+```
+
+AI 会调用 `recognize(image_path="C:/screenshot.png", output_format="json")`。
+
 ### recognize_batch
 
 批量识别多张本地图片。
 
-- **参数**: `image_paths` — 图片路径列表（必填）
+- **参数**:
+  - `image_paths` — 图片路径列表（必填）
+  - `output_format` — 输出格式：`text`（默认）/`json`/`markdown`
 - **返回**: 与 `recognize` 相同的统一结构，`source` 为 `"batch"`
+
+### list_languages
+
+列出 PaddleOCR 支持的语言代码。
+
+- **返回**: 语言列表，包含 `code` 和 `name`
+
+### set_language
+
+切换 OCR 语言模型。切换后后续所有识别请求均使用新语言。
+
+- **参数**: `lang` — 语言代码，如 `en`、`japan`、`korean`
+- **返回**: `{"success": true, "language": "en", "status": "ready"}`
+
+> 切换语言会重新加载模型，耗时数秒，建议在会话开始时或确有需要时调用。
 
 ### ocr_status
 

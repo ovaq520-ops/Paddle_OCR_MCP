@@ -87,21 +87,31 @@ def _cleanup_gpu():
     gc.collect()
 
 
-def _parse_result(ocr_result) -> list[dict]:
+def _parse_result(ocr_result, with_boxes: bool = False) -> list[dict]:
     texts: list[dict] = []
     for page in ocr_result:
         rec_texts = page.get("rec_texts", [])
         rec_scores = page.get("rec_scores", [])
+        dt_polys = page.get("dt_polys", []) if with_boxes else []
         for i, item in enumerate(rec_texts):
             if isinstance(item, dict):
-                texts.append({
+                entry = {
                     "text": item.get("text", ""),
                     "confidence": round(item.get("score", 0), 4),
-                })
+                }
             elif isinstance(item, str):
                 score = rec_scores[i] if i < len(rec_scores) else 1.0
-                texts.append({"text": item, "confidence": round(score, 4)})
+                entry = {"text": item, "confidence": round(score, 4)}
+            else:
+                entry = {"text": str(item), "confidence": 1.0}
+            if with_boxes and i < len(dt_polys):
+                entry["box"] = dt_polys[i]
+            texts.append(entry)
     return texts
+
+
+def _to_markdown(texts: list[dict]) -> str:
+    return "\n\n".join(t.get("text", "") for t in texts)
 
 # ============================================================
 # 3. 心跳看门狗
@@ -136,14 +146,18 @@ threading.Thread(target=_watchdog, daemon=True).start()
 # ============================================================
 
 
-def _build_text_result(image_path: str, ocr_result) -> dict:
-    texts = _parse_result(ocr_result)
-    return {
+def _build_text_result(image_path: str, ocr_result, output_format: str = "text") -> dict:
+    with_boxes = output_format == "json"
+    texts = _parse_result(ocr_result, with_boxes=with_boxes)
+    result = {
         "image": os.path.basename(image_path),
         "text_count": len(texts),
         "texts": texts,
         "full_text": "\n".join(t["text"] for t in texts),
     }
+    if output_format == "markdown":
+        result["markdown"] = _to_markdown(texts)
+    return result
 
 
 def _predict_with_fallback(paths: list[str]) -> list:
@@ -162,6 +176,9 @@ def _handle_recognize(req: dict) -> dict:
     req_id = req.get("id", "")
     single_path = req.get("image_path", "")
     multi_paths = req.get("image_paths", [])
+    output_format = req.get("output_format", "text")
+    if output_format not in ("text", "json", "markdown"):
+        output_format = "text"
     if single_path and not multi_paths:
         multi_paths = [single_path]
     if not multi_paths:
@@ -182,7 +199,7 @@ def _handle_recognize(req: dict) -> dict:
             valid_idx = 0
             for i in range(len(multi_paths)):
                 if results[i] is None:
-                    results[i] = _build_text_result(valid_paths[valid_idx], ocr_results[valid_idx])
+                    results[i] = _build_text_result(valid_paths[valid_idx], ocr_results[valid_idx], output_format)
                     valid_idx += 1
         except Exception as exc:
             logger.exception("OCR batch failed")
@@ -200,6 +217,20 @@ def _handle_status(req: dict) -> dict:
     return {"id": req.get("id", ""), "result": {
         "loaded": True, "language": os.environ.get("PADDLEOCR_LANG", "ch"), "status": "ready",
     }}
+
+
+def _handle_set_language(req: dict) -> dict:
+    req_id = req.get("id", "")
+    lang = req.get("lang", "")
+    if not lang:
+        return {"id": req_id, "error": "lang is required"}
+    try:
+        os.environ["PADDLEOCR_LANG"] = lang
+        _load_model()
+        return {"id": req_id, "result": {"language": lang, "status": "ready"}}
+    except Exception as exc:
+        logger.exception("Failed to switch language to %s", lang)
+        return {"id": req_id, "error": f"Failed to switch language: {exc}"}
 
 
 def _handle_shutdown(req: dict) -> dict:
@@ -238,6 +269,8 @@ def main():
             resp = _handle_recognize(req)
         elif method == "ocr_status":
             resp = _handle_status(req)
+        elif method == "set_language":
+            resp = _handle_set_language(req)
         elif method == "shutdown":
             resp = _handle_shutdown(req)
         else:
