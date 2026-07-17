@@ -53,7 +53,7 @@ PaddleOCR 支持以下四个 AI 编程工具：
 
 > **注意**：如果 `~/.claude.json` 中已有 `mcpServers` 字段，将 `PaddleOCR` 合并进去，不要创建新的顶级 `mcpServers`。
 
-#### Codex（联网查询）
+#### Codex（联网查询，未实测）
 
 ```toml
 [mcp_servers.PaddleOCR]
@@ -71,7 +71,7 @@ codex mcp add PaddleOCR -- "E:/soft/anaconda3/envs/paddle_ocr/python.exe" "E:/so
 
 配置后重启 Codex 终端，`codex mcp list` 验证生效。
 
-#### Cursor（联网查询）
+#### Cursor（联网查询，未实测）
 
 ```json
 {
@@ -88,7 +88,7 @@ codex mcp add PaddleOCR -- "E:/soft/anaconda3/envs/paddle_ocr/python.exe" "E:/so
 
 > Windows 上如遇问题，可将 `command` 改为 `"cmd"`，`args` 改为 `["/c", "E:/...python.exe", "E:/.../mcp_server.py"]`。
 
-#### Trae（联网查询）
+#### Trae（联网查询，未实测）
 
 ```json
 {
@@ -218,7 +218,7 @@ _ocr = PaddleOCR(
 ## 架构
 
 ```
-Claude Code 启动 → 读 mcp.json → 启动 mcp_server.py（轻量主进程，~85MB）
+Claude Code 启动 → 读 ~/.claude.json → 启动 mcp_server.py（轻量主进程，~85MB）
   → AI 调 recognize() → 主进程 spawn python ocr_worker.py（子进程，~900MB）
     → OCR 完成 → 子进程常驻 5 分钟 → 无新请求自动退出，释放 GPU
 ```

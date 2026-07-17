@@ -52,7 +52,7 @@ Edit `~/.claude.json`, add under the `mcpServers` field:
 
 > **Note**: If `mcpServers` already exists in `~/.claude.json`, merge `PaddleOCR` into it. You can also use the dedicated `~/.claude/mcp.json` file — just don't configure both simultaneously, or the MCP will be loaded twice.
 
-#### Codex (Web Research)
+#### Codex (Web Research, untested)
 
 ```toml
 [mcp_servers.PaddleOCR]
@@ -70,7 +70,7 @@ codex mcp add PaddleOCR -- "E:/soft/anaconda3/envs/paddle_ocr/python.exe" "E:/so
 
 Restart Codex terminal after configuration. Verify with `codex mcp list`.
 
-#### Cursor (Web Research)
+#### Cursor (Web Research, untested)
 
 ```json
 {
@@ -87,7 +87,7 @@ After saving, check Cursor Settings → MCP panel for a green indicator. `Cmd+Sh
 
 > On Windows, if issues arise, wrap with `"command": "cmd"` and `"args": ["/c", "E:/...python.exe", "E:/.../mcp_server.py"]`.
 
-#### Trae (Web Research)
+#### Trae (Web Research, untested)
 
 ```json
 {
@@ -213,7 +213,7 @@ Check OCR engine status.
 ## Architecture
 
 ```
-Claude Code starts → reads mcp.json → launches mcp_server.py (lightweight manager, ~85MB)
+Claude Code starts → reads ~/.claude.json → launches mcp_server.py (lightweight manager, ~85MB)
   → AI calls recognize() → manager spawns python ocr_worker.py (worker with model, ~900MB)
     → OCR completes → worker stays alive for 5 minutes → idle timeout → exits, releasing GPU
 ```
